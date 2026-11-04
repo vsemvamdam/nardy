@@ -97,6 +97,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 
 .tile{position:relative;flex:none;height:var(--tile-h);aspect-ratio:3/4;border-radius:14px;overflow:hidden;background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line);transition:box-shadow .2s}
 .tile--me{height:var(--tile-me-h)}
+#seatOpp .tile{max-width:50vw}
+#game.mode-bot #tileOpp{height:var(--tile-me-h)}
 .seat.active .tile{box-shadow:inset 0 0 0 2px var(--accent)}
 .tile video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
 .tile--me video{transform:scaleX(-1)}
@@ -196,6 +198,14 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 .menu-list{display:flex;flex-direction:column;gap:8px}
 .menu-item{display:flex;justify-content:space-between;align-items:center;min-height:50px;border:1px solid var(--line);background:transparent;border-radius:14px;padding:0 16px;font-weight:500;text-align:left}
 .menu-item.danger{color:var(--bad)}
+.lvl{display:flex;align-items:center;gap:14px;min-height:64px;border:1px solid var(--line);background:transparent;border-radius:14px;padding:10px 14px;text-align:left;color:var(--ink)}
+.lvl svg{flex:none;width:38px;height:38px}
+.lvl span{min-width:0}
+.lvl b{display:block;font-weight:600}
+.lvl small{display:block;color:var(--ink-2);font-size:13px;margin-top:2px;line-height:1.35}
+.lvl.resume{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.lvl.resume small{color:inherit;opacity:.82}
+.avatar svg{width:46%;max-width:64px;height:auto}
 .confirm{display:flex;gap:8px}
 .confirm .btn{flex:1}
 .result-score{display:flex;align-items:center;justify-content:center;gap:18px;padding:8px 0}
@@ -220,6 +230,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
   .controls{justify-content:flex-start}
   .tray{bottom:auto;top:50%;left:auto;right:max(16px,env(safe-area-inset-right));transform:translateY(-50%);width:330px}
   .tile.big{width:min(60vw,560px);aspect-ratio:4/3}
+  #seatOpp .tile{max-width:none}
+  #game.mode-bot #tileOpp{width:96px;height:96px;aspect-ratio:1}
 }
 @media (prefers-reduced-motion:reduce){.ck{transition:none}.mk,.sel,.can,.tumble,.flag-wave{animation:none}}
 </style>
@@ -251,6 +263,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
     <div class="btn-row" id="lobbyHostBtns">
       <button class="btn btn-primary" id="btnCreate">Создать игру по ссылке</button>
       <button class="btn btn-ghost" id="btnResume" hidden>Вернуться в партию</button>
+      <button class="btn btn-ghost" id="btnBot">Играть с ботом</button>
       <button class="btn btn-ghost" id="btnLocal">Играть вдвоём на одном экране</button>
     </div>
     <div class="btn-row" id="lobbyGuestBtns" hidden>
@@ -364,6 +377,16 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
   </div>
 </div>
 
+<div class="scrim" id="sheetBot" hidden>
+  <div class="sheet">
+    <span class="eyebrow">Тренировка</span>
+    <h2>Игра с ботом</h2>
+    <p>Вы играете белыми. Бот бросает кубики так же честно, как и вы.</p>
+    <div class="menu-list" id="botList"></div>
+    <button class="btn btn-ghost" data-close>Отмена</button>
+  </div>
+</div>
+
 <div class="scrim" id="sheetOver" hidden>
   <div class="sheet">
     <span class="eyebrow" id="overEyebrow">Партия окончена</span>
@@ -383,6 +406,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 
 <script>/*__PEERJS__*/</script>
 <script>/*__ENGINE__*/</script>
+<script>/*__BOT__*/</script>
+<script>/*__WORKER__*/</script>
 <script>
 (() => {
 'use strict';
@@ -625,6 +650,7 @@ const Emotes = {
     if (App.mode === 'net') App.net && App.net.send({ t: 'emote', id, src: id === 'img' ? src : undefined });
     const fromTop = App.mode === 'local' && App.S && App.S.turn !== App.me; // на одном экране кидает тот, чей ход
     this.fly(id, src, fromTop ? 'top' : 'bottom');
+    if (App.mode === 'bot' && Math.random() < 0.7) App.botEmote('reply', 1300);
   },
   receive(d) {
     const now = Date.now(); this.incoming = this.incoming.filter((t) => now - t < 3000);
@@ -807,11 +833,42 @@ const Media = {
   reset() { this.stopCam(); if (this.inc) { try { this.inc.close(); } catch (e) {} } this.inc = null; this.setRemote(null); },
 };
 
+/* ================= Бот (фоновый поток) ================= */
+const PIPS = { 1: [[0, 0]], 2: [[-1, -1], [1, 1]], 3: [[-1, -1], [0, 0], [1, 1]], 4: [[-1, -1], [1, -1], [-1, 1], [1, 1]], 5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]], 6: [[-1, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [1, 1]] };
+function dieSvg(n) {
+  return '<svg viewBox="0 0 36 36" aria-hidden="true"><rect x="2" y="2" width="32" height="32" rx="7" fill="#F6EFE4" stroke="#B7A487" stroke-width="1"/>' +
+    PIPS[n].map(([x, y]) => `<circle cx="${18 + x * 8.5}" cy="${18 + y * 8.5}" r="3.1" fill="#1E2029"/>`).join('') + '</svg>';
+}
+const BotRunner = {
+  w: null, id: 0, pending: new Map(), failed: false,
+  init() {
+    if (this.w || this.failed || typeof WORKER_SRC === 'undefined') return;
+    try {
+      this.w = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+      this.w.onmessage = (e) => { const f = this.pending.get(e.data.id); if (f) { this.pending.delete(e.data.id); f(e.data.seq); } };
+      this.w.onerror = () => { this.failed = true; this.w = null; for (const f of this.pending.values()) f(null); this.pending.clear(); };
+    } catch (e) { this.failed = true; this.w = null; }
+  },
+  choose(S, level) {
+    this.init();
+    const sync = () => new Promise((r) => setTimeout(() => { try { r(Bot.choose(S, level)); } catch (e) { r([]); } }, 20));
+    if (!this.w) return sync();
+    return new Promise((resolve) => {
+      const id = ++this.id; let done = false, t = null;
+      const fin = (seq) => { if (done) return; done = true; clearTimeout(t); if (Array.isArray(seq)) resolve(seq); else sync().then(resolve); };
+      t = setTimeout(() => { this.pending.delete(id); fin(null); }, 6000);
+      this.pending.set(id, fin);
+      try { this.w.postMessage({ id, S: JSON.parse(JSON.stringify(S)), level }); } catch (e) { this.pending.delete(id); fin(null); }
+    });
+  },
+};
+
 /* ================= Приложение ================= */
 const App = {
   mode: null, role: null, code: null, me: 0, S: null, net: null,
   myName: store.get('nardy:name', ''), oppName: 'Соперник', conn: 'idle',
   sel: null, reach: null, busy: false, queue: Promise.resolve(), rolling: false, lastTurnSeen: null, wake: null,
+  botLevel: 3, botBusy: false, botThinking: false, botToken: 0,
 
   /* ----- запуск ----- */
   init() {
@@ -840,6 +897,7 @@ const App = {
     $('btnCreate').onclick = () => this.createRoom();
     $('btnResume').onclick = () => { const l = store.get('nardy:last'); if (l) this.enterNet(l.role, l.code); };
     $('btnLocal').onclick = () => this.enterLocal();
+    $('btnBot').onclick = () => { Snd.ensure(); this.openBotSheet(false); };
     $('btnJoin').onclick = () => this.joinRoom(true);
     $('btnJoinNoCam').onclick = () => this.joinRoom(false);
     $('board').addEventListener('click', (e) => this.onBoardClick(e));
@@ -897,7 +955,73 @@ const App = {
     Board.setMe(0); this.showGame(); Board.sync(this.S); this.render();
     if (!this.S) this.newGame();
   },
+  openBotSheet(fromMenu) {
+    const L = $('botList'); L.textContent = '';
+    const saved = store.get('nardy:bot');
+    if (!fromMenu && saved && this.sane(saved.state) && saved.state.phase !== 'over' && Bot.LEVELS[saved.level - 1]) {
+      const lv = Bot.LEVELS[saved.level - 1], b = document.createElement('button'); b.className = 'lvl resume';
+      b.innerHTML = dieSvg(lv.id) + `<span><b>Продолжить партию</b><small>${esc(lv.name)} · счёт ${saved.state.score[0]}:${saved.state.score[1]}</small></span>`;
+      b.onclick = () => { this.closeSheets(); this.enterBot(lv.id, true); }; L.appendChild(b);
+    }
+    for (const lv of Bot.LEVELS) {
+      const b = document.createElement('button'); b.className = 'lvl';
+      b.innerHTML = dieSvg(lv.id) + `<span><b>${esc(lv.name)}</b><small>${esc(lv.note)}</small></span>`;
+      b.onclick = () => { this.closeSheets(); this.enterBot(lv.id, false); }; L.appendChild(b);
+    }
+    $('sheetBot').hidden = false;
+  },
+  enterBot(level, resume) {
+    if (this.net) { this.net.destroy(); this.net = null; }
+    this.botToken++; this.botBusy = false; this.botThinking = false;
+    this.mode = 'bot'; this.role = null; this.code = null; this.me = 0; this.botLevel = level;
+    this.oppName = Bot.LEVELS[level - 1].name;
+    const saved = resume ? store.get('nardy:bot') : null;
+    this.S = saved && this.sane(saved.state) ? saved.state : null; this.sel = null; this.reach = null;
+    Board.setMe(0); Board.first = true; this.showGame(); Board.sync(this.S || { pts: Engine.initialPts(), off: [0, 0] }); this.render();
+    if (!this.S) this.commit({ type: 'newgame', rolloff: Engine.rollOff(rnd6) });
+    else { this.save(); this.botStep(); }
+  },
+  async botStep() {
+    if (this.mode !== 'bot' || this.botBusy) return;
+    const S0 = this.S, bp = 1 - this.me;
+    if (!S0 || S0.phase === 'over' || S0.turn !== bp) return;
+    const tok = this.botToken, alive = () => this.mode === 'bot' && tok === this.botToken;
+    this.botBusy = true;
+    try {
+      if (this.S.phase === 'roll') {
+        await sleep(600);
+        if (!alive() || this.S.phase !== 'roll' || this.S.turn !== bp) return;
+        await this.commit({ type: 'roll', p: bp, dice: [rnd6(), rnd6()] });
+      }
+      if (!alive() || this.S.phase !== 'move' || this.S.turn !== bp) return;
+      this.botThinking = true; this.renderSeats();
+      const t0 = Date.now(); let seq = [];
+      try { seq = await BotRunner.choose(this.S, this.botLevel); } catch (e) { seq = []; }
+      await sleep(Math.max(0, 450 - (Date.now() - t0)));
+      if (!alive()) return;
+      this.botThinking = false; this.renderSeats();
+      for (const m of seq) {
+        if (!alive() || this.S.phase !== 'move' || this.S.turn !== bp) break;
+        await this.commit({ type: 'move', p: bp, from: m.from, to: m.to, die: m.die }); await sleep(320);
+      }
+      let guard = 0; // страховка: если вариант бота не подошёл, доигрывает первым разрешённым ходом
+      while (alive() && this.S.phase === 'move' && this.S.turn === bp && guard++ < 6) {
+        const m = Engine.legalMoves(this.S)[0]; if (!m) break;
+        await this.commit({ type: 'move', p: bp, from: m.from, to: m.to, die: m.die }); await sleep(320);
+      }
+    } finally {
+      if (tok === this.botToken) { this.botBusy = false; this.botThinking = false; if (this.mode === 'bot') this.renderSeats(); }
+    }
+    if (alive() && this.S && this.S.phase !== 'over' && this.S.turn === bp) setTimeout(() => this.botStep(), 60);
+  },
+  botEmote(kind, delay = 600) {
+    if (this.mode !== 'bot') return;
+    const sets = { reply: ['😂', '🙏', '🤯', '😡', '👏', '💤', '🍅'], win: ['😂', '🔥', 'goal'], lose: ['👏', '😭', '🌹'], double: ['🔥', '🤯'] };
+    const list = sets[kind]; const id = list[Math.floor(Math.random() * list.length)]; const tok = this.botToken;
+    setTimeout(() => { if (this.mode === 'bot' && tok === this.botToken) Emotes.fly(id, null, 'top'); }, delay);
+  },
   leave() {
+    this.botToken++; this.botBusy = false; this.botThinking = false;
     if (this.net) { this.net.destroy(); this.net = null; } Media.reset();
     this.mode = null; this.S = null; this.sel = null; this.reach = null; Board.stacks.clear(); Board.first = true; Board.sync(null);
     history.replaceState(null, '', location.pathname); this.closeSheets();
@@ -908,6 +1032,7 @@ const App = {
   save() {
     if (this.mode === 'net') store.set('nardy:room:' + this.code, { state: this.S, opp: this.oppName });
     else if (this.mode === 'local') store.set('nardy:local', this.S);
+    else if (this.mode === 'bot') store.set('nardy:bot', { state: this.S, level: this.botLevel });
   },
   sane(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.pts) || s.pts.length !== 24 || !Array.isArray(s.off) || s.off.length !== 2) return false;
@@ -954,6 +1079,7 @@ const App = {
       const r = Engine.act(this.S, a); const prev = this.S; this.S = r.state; this.save();
       if (this.mode === 'net') this.net.send({ t: 'act', a, s: this.S });
       await this.present(prev, a, r.info);
+      if (this.mode === 'bot') setTimeout(() => this.botStep(), 30);
     });
   },
   applyRemote(d) {
@@ -974,7 +1100,12 @@ const App = {
   },
 
   /* ----- действия игрока ----- */
-  canAct() { return !!this.S && !this.busy && (this.mode === 'local' || (this.S.turn === this.me && this.net && this.net.open)); },
+  canAct() {
+    if (!this.S || this.busy) return false;
+    if (this.mode === 'local') return true;
+    if (this.mode === 'bot') return this.S.turn === this.me;
+    return this.S.turn === this.me && !!(this.net && this.net.open);
+  },
   roll() {
     if (!this.S || this.S.phase !== 'roll' || !this.canAct()) return;
     this.commit({ type: 'roll', p: this.S.turn, dice: [rnd6(), rnd6()] });
@@ -1028,6 +1159,7 @@ const App = {
       const nodes = Board.drawDice(dice.map((v) => ({ v })), side, { tumble: true });
       for (let k = 0; k < 6; k++) { await sleep(70); nodes.forEach((n, i) => n.replaceChildren(...Board.dieNode(k === 5 ? dice[i] : 1 + Math.floor(Math.random() * 6), n._cx, G.MID, n._s).childNodes)); }
       await sleep(140); this.rolling = false; this.render();
+      if (this.mode === 'bot' && a.p !== this.me && a.dice[0] === a.dice[1] && a.dice[0] >= 5 && Math.random() < 0.6) this.botEmote('double', 200);
       if (info.passed) { this.toast(this.isMine(a.p) ? 'Нет хода — ход переходит сопернику' : (this.mode === 'local' ? 'Нет хода — ход переходит' : this.oppName + ': нет хода'), 1900); await sleep(700); }
     } else if (a.type === 'move') {
       Board.sync(S); Snd.play('click'); this.render(); await sleep(320);
@@ -1058,6 +1190,7 @@ const App = {
     $('overMe').textContent = S.score[me]; $('overOpp').textContent = S.score[1 - me];
     $('overMeName').textContent = this.nameOf(me); $('overOppName').textContent = this.nameOf(1 - me);
     $('sheetOver').hidden = false; if (iWon) Snd.play('win');
+    if (this.mode === 'bot') this.botEmote(iWon ? 'lose' : 'win', 900);
   },
   closeSheets() { for (const s of document.querySelectorAll('.scrim')) s.hidden = true; },
 
@@ -1066,11 +1199,12 @@ const App = {
     const L = $('menuList'); L.textContent = '';
     const item = (label, fn, cls = '') => { const b = document.createElement('button'); b.className = 'menu-item ' + cls; b.innerHTML = label; b.onclick = fn; L.appendChild(b); return b; };
     if (this.mode === 'net') item('Пригласить соперника<span>→</span>', () => { this.closeSheets(); $('sheetInvite').hidden = false; });
+    if (this.mode === 'bot') item(`Сложность <span>${esc(Bot.LEVELS[this.botLevel - 1].name)} →</span>`, () => { this.closeSheets(); this.openBotSheet(true); });
     item('Правила<span>→</span>', () => { this.closeSheets(); $('sheetRules').hidden = false; });
     item(`Звук <span>${Snd.on ? 'вкл' : 'выкл'}</span>`, (e) => { Snd.on = !Snd.on; store.set('nardy:sound', Snd.on); e.currentTarget.querySelector('span').textContent = Snd.on ? 'вкл' : 'выкл'; });
     const S = this.S;
     if (S && S.phase === 'over') item('Ещё партию<span>→</span>', () => { this.closeSheets(); this.newGame(); });
-    else if (S && (this.mode === 'local' || (this.net && this.net.open))) {
+    else if (S && (this.mode === 'local' || this.mode === 'bot' || (this.net && this.net.open))) {
       const label = this.mode === 'local' ? 'Сдаться за ' + (S.turn === 0 ? 'белых' : 'чёрных') : 'Сдаться';
       const b = item(label, () => {
         const c = document.createElement('div'); c.className = 'confirm';
@@ -1102,12 +1236,13 @@ const App = {
     return p === this.me ? (this.myName || 'Вы') : this.oppName;
   },
   toast(msg, ms = 1500) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(this.toastT); this.toastT = setTimeout(() => t.classList.remove('show'), ms); },
-  render() { this.renderSeats(); this.renderDice(); this.renderMarks(); this.renderControls(); },
+  render() { $('game').classList.toggle('mode-bot', this.mode === 'bot'); this.renderSeats(); this.renderDice(); this.renderMarks(); this.renderControls(); },
   renderSeats() {
     const S = this.S, local = this.mode === 'local', me = local ? 0 : this.me, opp = 1 - me;
     $('chipMe').className = 'chip ' + (me === 0 ? 'chip-w' : 'chip-b'); $('chipOpp').className = 'chip ' + (opp === 0 ? 'chip-w' : 'chip-b');
     $('nameMe').textContent = this.nameOf(me); $('nameOpp').textContent = this.nameOf(opp);
-    $('avMe').textContent = (this.nameOf(me) || '?').slice(0, 1).toUpperCase(); $('avOpp').textContent = (this.nameOf(opp) || '?').slice(0, 1).toUpperCase();
+    $('avMe').textContent = (this.nameOf(me) || '?').slice(0, 1).toUpperCase();
+    if (this.mode === 'bot') $('avOpp').innerHTML = dieSvg(this.botLevel); else $('avOpp').textContent = (this.nameOf(opp) || '?').slice(0, 1).toUpperCase();
     const meta = (p) => S ? `осталось ${Engine.pips(S, p)}` + (S.off[p] ? ` · выведено ${S.off[p]}` : '') : 'осталось 360';
     $('metaMe').textContent = meta(me); $('metaOpp').textContent = meta(opp);
     $('scoreMe').textContent = S ? S.score[me] : 0; $('scoreOpp').textContent = S ? S.score[opp] : 0;
@@ -1116,6 +1251,7 @@ const App = {
     // статус соединения
     const st = $('statusOpp'); let txt = '', cls = '';
     if (local) { txt = S && S.phase !== 'over' && S.turn === opp ? 'ходят чёрные' : 'на одном экране'; cls = ''; }
+    else if (this.mode === 'bot') { txt = this.botThinking ? 'бот думает…' : 'бот · уровень ' + this.botLevel + ' из 4'; cls = this.botThinking ? 'warn' : 'online'; }
     else {
       const M = { online: ['в сети', 'online'], connecting: ['подключение…', 'warn'], waiting: ['ждём соперника', 'warn'], 'waiting-back': ['соперник отключился', 'bad'], reconnecting: ['переподключаемся…', 'warn'], 'opp-offline': ['создатель игры не в сети', 'bad'], 'net-down': ['нет связи с сервером', 'bad'], 'id-taken': ['комната открыта на другом устройстве', 'bad'], incompatible: ['браузер не поддерживает видеосвязь', 'bad'], full: ['в комнате уже двое игроков', 'bad'], idle: ['—', ''] };
       [txt, cls] = M[this.conn] || ['—', ''];
@@ -1134,7 +1270,7 @@ const App = {
       tl.classList.add('mine');
       const who = local ? (S.turn === 0 ? 'Белые' : 'Чёрные') + ': ' : 'Ваш ход: ';
       tl.textContent = S.phase === 'roll' ? who + 'бросайте кубики' : who + 'сыграйте ' + S.dice.join(' и ') + (local ? '' : '. Ход не отменить');
-    } else tl.textContent = 'Ходит ' + this.oppName;
+    } else tl.textContent = this.mode === 'bot' ? (this.botThinking ? 'Бот думает…' : 'Ходит бот') : 'Ходит ' + this.oppName;
   },
   renderDice() {
     const S = this.S;
@@ -1170,7 +1306,7 @@ const App = {
   },
 };
 
-window.NardyApp = App; // для отладки
+window.NardyApp = App; window.NardyBot = BotRunner; // для отладки
 App.init();
 })();
 </script>

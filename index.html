@@ -97,6 +97,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 
 .tile{position:relative;flex:none;height:var(--tile-h);aspect-ratio:3/4;border-radius:14px;overflow:hidden;background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line);transition:box-shadow .2s}
 .tile--me{height:var(--tile-me-h)}
+#seatOpp .tile{max-width:50vw}
+#game.mode-bot #tileOpp{height:var(--tile-me-h)}
 .seat.active .tile{box-shadow:inset 0 0 0 2px var(--accent)}
 .tile video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
 .tile--me video{transform:scaleX(-1)}
@@ -196,6 +198,14 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 .menu-list{display:flex;flex-direction:column;gap:8px}
 .menu-item{display:flex;justify-content:space-between;align-items:center;min-height:50px;border:1px solid var(--line);background:transparent;border-radius:14px;padding:0 16px;font-weight:500;text-align:left}
 .menu-item.danger{color:var(--bad)}
+.lvl{display:flex;align-items:center;gap:14px;min-height:64px;border:1px solid var(--line);background:transparent;border-radius:14px;padding:10px 14px;text-align:left;color:var(--ink)}
+.lvl svg{flex:none;width:38px;height:38px}
+.lvl span{min-width:0}
+.lvl b{display:block;font-weight:600}
+.lvl small{display:block;color:var(--ink-2);font-size:13px;margin-top:2px;line-height:1.35}
+.lvl.resume{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.lvl.resume small{color:inherit;opacity:.82}
+.avatar svg{width:46%;max-width:64px;height:auto}
 .confirm{display:flex;gap:8px}
 .confirm .btn{flex:1}
 .result-score{display:flex;align-items:center;justify-content:center;gap:18px;padding:8px 0}
@@ -220,6 +230,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
   .controls{justify-content:flex-start}
   .tray{bottom:auto;top:50%;left:auto;right:max(16px,env(safe-area-inset-right));transform:translateY(-50%);width:330px}
   .tile.big{width:min(60vw,560px);aspect-ratio:4/3}
+  #seatOpp .tile{max-width:none}
+  #game.mode-bot #tileOpp{width:96px;height:96px;aspect-ratio:1}
 }
 @media (prefers-reduced-motion:reduce){.ck{transition:none}.mk,.sel,.can,.tumble,.flag-wave{animation:none}}
 </style>
@@ -251,6 +263,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
     <div class="btn-row" id="lobbyHostBtns">
       <button class="btn btn-primary" id="btnCreate">Создать игру по ссылке</button>
       <button class="btn btn-ghost" id="btnResume" hidden>Вернуться в партию</button>
+      <button class="btn btn-ghost" id="btnBot">Играть с ботом</button>
       <button class="btn btn-ghost" id="btnLocal">Играть вдвоём на одном экране</button>
     </div>
     <div class="btn-row" id="lobbyGuestBtns" hidden>
@@ -361,6 +374,16 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
       <li><b>Сделанный ход не отменяется.</b> Даже если сыграли один кубик из двух.</li>
     </ol>
     <button class="btn btn-ghost" data-close>Понятно</button>
+  </div>
+</div>
+
+<div class="scrim" id="sheetBot" hidden>
+  <div class="sheet">
+    <span class="eyebrow">Тренировка</span>
+    <h2>Игра с ботом</h2>
+    <p>Вы играете белыми. Бот бросает кубики так же честно, как и вы.</p>
+    <div class="menu-list" id="botList"></div>
+    <button class="btn btn-ghost" data-close>Отмена</button>
   </div>
 </div>
 
@@ -586,6 +609,139 @@ const Engine = (() => {
 })();
 if (typeof module !== 'undefined') module.exports = Engine;
 </script>
+<script>/* ===== Бот для длинных нард =====
+   Уровни: 1 Новичок — случайный ход; 2 Любитель — гонка с ошибками;
+   3 Мастер — полная оценка позиции; 4 Гроссмейстер — просчёт ответа соперника. */
+const Bot = (() => {
+  const E = (typeof Engine !== 'undefined') ? Engine : require('./engine.js');
+  const LEVELS = [
+    { id: 1, name: 'Новичок', note: 'Ходит наугад. Для разминки.' },
+    { id: 2, name: 'Любитель', note: 'Понимает игру, но часто ошибается.' },
+    { id: 3, name: 'Мастер', note: 'Строит блоки, не даёт уйти с головы.' },
+    { id: 4, name: 'Гроссмейстер', note: 'Просчитывает ваш ответ на каждый ход.' },
+  ];
+  const CFG = { K: 6 };
+  const uniq = (a) => [...new Set(a)];
+  const keyOf = (st) => st.pts.join(',') + '|' + st.off[0] + ',' + st.off[1];
+
+  // Все различные итоговые позиции после полного хода (с учётом обязательных правил)
+  function turns(S) {
+    const p = S.turn, out = new Map(), seen = new Set();
+    let best = 0;
+    const rec = (st, seq) => {
+      let any = false;
+      if (st.dice.length && st.off[p] < 15) {
+        for (const d of uniq(st.dice)) for (const m of E.singleMoves(st, d)) {
+          any = true;
+          const n = E.applyRaw(st, m);
+          const k = keyOf(n) + '|' + n.dice.join('') + '|' + n.headUsed;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          rec(n, seq.concat([m]));
+        }
+      }
+      if (!any) {
+        const L = seq.length;
+        if (L < best) return;
+        if (L > best) { best = L; out.clear(); }
+        const k = keyOf(st);
+        if (!out.has(k)) out.set(k, { seq, st });
+      }
+    };
+    rec(S, []);
+    if (!best) return [];
+    if (best === 1) { // один ход: берём разрешённые ходы прямо из правил (там же правило большего кубика)
+      const m1 = new Map();
+      for (const m of E.legalMoves(Object.assign({}, S, { phase: 'move' }))) { const st = E.applyRaw(S, m), k = keyOf(st); if (!m1.has(k)) m1.set(k, { seq: [m], st }); }
+      return [...m1.values()];
+    }
+    return [...out.values()];
+  }
+
+  // ---- оценка позиции: side(p) - side(q), чем больше, тем лучше для p ----
+  const W = { head: 2.2, stack: 2.32, homeStack: 0.5, spread: 1.5, block: 1.1, blockPow: 2.54, blockHome: 0.6 };
+  function side(pts, off, p, w) {
+    const q = 1 - p, sg = p === 0 ? 1 : -1;
+    const own = new Array(24);
+    let pip = 0;
+    for (let i = 0; i < 24; i++) { const v = pts[E.absOf(p, i)] * sg; own[i] = v > 0 ? v : 0; pip += own[i] * (24 - i); }
+    let s = -pip;
+    s -= w.head * Math.max(0, own[0] - 1);
+    let spread = 0;
+    for (let i = 1; i < 24; i++) {
+      if (own[i] > 3) s -= w.stack * (own[i] - 3) * (i < 18 ? 1 : w.homeStack);
+      if (own[i] && i < 18) spread++;
+    }
+    s += w.spread * spread;
+    // блоки в координатах пути соперника: шашки соперника позади блока должны через него пройти
+    const qs = q === 0 ? 1 : -1, opp = new Array(24);
+    for (let j = 0; j < 24; j++) { const v = pts[E.absOf(q, j)] * qs; opp[j] = v > 0 ? v : 0; }
+    let behind = 0, j = 0;
+    const behindAt = new Array(25); behindAt[0] = 0;
+    for (let k = 0; k < 24; k++) behindAt[k + 1] = behindAt[k] + opp[k];
+    while (j < 24) {
+      const a = pts[E.absOf(q, j)] * sg;
+      if (a > 0) {
+        let e = j;
+        while (e + 1 < 24 && pts[E.absOf(q, e + 1)] * sg > 0) e++;
+        const L = e - j + 1;
+        behind = behindAt[j];
+        if (L >= 2 && behind) s += w.block * Math.pow(L, w.blockPow) * (behind / 15) * (j < 18 ? 1 : w.blockHome);
+        j = e + 1;
+      } else j++;
+    }
+    return s;
+  }
+  function evaluate(st, p, w = W) {
+    if (st.off[p] === 15) return 1e6;
+    return side(st.pts, st.off, p, w) - side(st.pts, st.off, 1 - p, w);
+  }
+
+  const ROLLS = [];
+  for (let a = 1; a <= 6; a++) for (let b = a; b <= 6; b++) ROLLS.push({ dice: [a, b], w: a === b ? 1 / 36 : 2 / 36 });
+
+  function oppState(S, st) {
+    const p = S.turn, q = 1 - p, td = S.turnsDone.slice(); td[p]++;
+    return { pts: st.pts, off: st.off, turn: q, phase: 'move', dice: [], rolled: [], headUsed: 0, turnsDone: td };
+  }
+  function replyValue(S, st, w) { // ожидаемая оценка для p после лучшего ответа соперника
+    const p = S.turn; if (st.off[p] === 15) return 1e6;
+    const base = oppState(S, st); let sum = 0;
+    for (const r of ROLLS) {
+      const O = Object.assign({}, base, { rolled: r.dice, dice: r.dice[0] === r.dice[1] ? [r.dice[0], r.dice[0], r.dice[0], r.dice[0]] : r.dice.slice() });
+      const ts = turns(O);
+      let worst = ts.length ? Infinity : evaluate(st, p, w);
+      for (const t of ts) { const v = evaluate(t.st, p, w); if (v < worst) worst = v; }
+      sum += r.w * worst;
+    }
+    return sum;
+  }
+
+  function choose(S, level, rand = Math.random, w = W) {
+    const ts = turns(S);
+    if (!ts.length) return [];
+    if (ts.length === 1) return ts[0].seq;
+    const p = S.turn;
+    if (level <= 1) return ts[Math.floor(rand() * ts.length)].seq;
+    if (level === 2) { // понимает позицию, но часто ошибается
+      if (rand() < 0.2) return ts[Math.floor(rand() * ts.length)].seq;
+      let best = null, bv = -Infinity;
+      for (const t of ts) { const v = evaluate(t.st, p, w) + (rand() + rand() + rand() - 1.5) * 14; if (v > bv) { bv = v; best = t; } }
+      return best.seq;
+    }
+    const scored = ts.map((t) => ({ t, v: evaluate(t.st, p, w) })).sort((a, b) => b.v - a.v);
+    if (level === 3) return scored[0].t.seq;
+    const K = Math.min(scored.length, CFG.K);
+    let best = scored[0], bv = -Infinity;
+    for (let i = 0; i < K; i++) { const v = replyValue(S, scored[i].t.st, w); if (v > bv) { bv = v; best = scored[i]; } }
+    return best.t.seq;
+  }
+
+  return { LEVELS, W, CFG, turns, evaluate, choose };
+})();
+if (typeof module !== 'undefined') module.exports = Bot;
+</script>
+<script>const WORKER_SRC = "/* ===== Движок длинных нард =====\n   Игрок 0 — белые, 1 — чёрные. pts[a] — абсолютный пункт a (= путь белых):\n   >0 белые шашки, <0 чёрные. У каждого игрока свой путь 0..23: 0 — голова, 18..23 — дом.\n   Путь чёрных i ↔ абсолютный (i+12)%24. Преобразование симметрично. */\nconst Engine = (() => {\n  const HOME = 18;\n  const absOf = (p, i) => (p === 0 ? i : (i + 12) % 24);\n  const sgn = (p) => (p === 0 ? 1 : -1);\n  const cnt = (S, p, i) => { const v = S.pts[absOf(p, i)]; return p === 0 ? (v > 0 ? v : 0) : (v < 0 ? -v : 0); };\n  const oppAt = (S, p, i) => { const v = S.pts[absOf(p, i)]; return p === 0 ? v < 0 : v > 0; };\n\n  function initialPts() { const pts = new Array(24).fill(0); pts[0] = 15; pts[12] = -15; return pts; }\n\n  function maxHead(S) {\n    const r = S.rolled;\n    return S.turnsDone[S.turn] === 0 && r && r.length === 2 && r[0] === r[1] && (r[0] === 3 || r[0] === 4 || r[0] === 6) ? 2 : 1;\n  }\n  function allHome(S, p) { let n = S.off[p]; for (let i = HOME; i < 24; i++) n += cnt(S, p, i); return n === 15; }\n\n  // Забор из 6+ шашек подряд (по пути соперника), впереди которого нет ни одной шашки соперника\n  function badBlock(pts, p, destAbs) {\n    const q = 1 - p;\n    const own = (a) => (p === 0 ? pts[a] > 0 : pts[a] < 0);\n    const qi = absOf(q, destAbs);\n    let lo = qi, hi = qi;\n    while (lo > 0 && own(absOf(q, lo - 1))) lo--;\n    while (hi < 23 && own(absOf(q, hi + 1))) hi++;\n    if (hi - lo + 1 < 6) return false;\n    for (let k = hi + 1; k < 24; k++) { const v = pts[absOf(q, k)]; if (q === 0 ? v > 0 : v < 0) return false; }\n    return true;\n  }\n\n  function singleMoves(S, d) {\n    const p = S.turn, res = [];\n    const home = allHome(S, p), mh = maxHead(S), s = sgn(p);\n    for (let i = 0; i < 24; i++) {\n      if (!cnt(S, p, i)) continue;\n      if (i === 0 && S.headUsed >= mh) continue;\n      const t = i + d;\n      if (t < 24) {\n        if (oppAt(S, p, t)) continue;\n        const pts = S.pts.slice();\n        pts[absOf(p, i)] -= s; pts[absOf(p, t)] += s;\n        if (badBlock(pts, p, absOf(p, t))) continue;\n        res.push({ from: i, to: t, die: d });\n      } else {\n        if (!home) continue;\n        if (t > 24) { let higher = false; for (let k = HOME; k < i; k++) if (cnt(S, p, k)) { higher = true; break; } if (higher) continue; }\n        res.push({ from: i, to: 24, die: d });\n      }\n    }\n    return res;\n  }\n\n  // Ход без завершения хода игрока (для перебора и подсказок)\n  function applyRaw(S, m) {\n    const p = S.turn, s = sgn(p);\n    const N = Object.assign({}, S, { pts: S.pts.slice(), off: S.off.slice(), dice: S.dice.slice() });\n    N.pts[absOf(p, m.from)] -= s;\n    if (m.to >= 24) N.off[p]++; else N.pts[absOf(p, m.to)] += s;\n    N.dice.splice(N.dice.indexOf(m.die), 1);\n    if (m.from === 0) N.headUsed++;\n    return N;\n  }\n\n  const uniq = (a) => [...new Set(a)];\n  function maxDepth(S, memo) {\n    if (!S.dice.length || S.off[S.turn] === 15) return 0;\n    const key = S.pts.join(',') + '|' + S.off[S.turn] + '|' + S.dice.join('') + '|' + S.headUsed;\n    if (memo.has(key)) return memo.get(key);\n    let best = 0;\n    outer: for (const d of uniq(S.dice)) {\n      for (const m of singleMoves(S, d)) {\n        const r = 1 + maxDepth(applyRaw(S, m), memo);\n        if (r > best) { best = r; if (best === S.dice.length) break outer; }\n      }\n    }\n    memo.set(key, best);\n    return best;\n  }\n\n  // Все разрешённые одиночные ходы с учётом обязательности максимума кубиков и большего кубика\n  function legalMoves(S) {\n    if (S.phase !== 'move' || !S.dice.length) return [];\n    const memo = new Map();\n    let cands = [], best = 0;\n    for (const d of uniq(S.dice)) {\n      for (const m of singleMoves(S, d)) {\n        const depth = 1 + maxDepth(applyRaw(S, m), memo);\n        cands.push({ m, depth });\n        if (depth > best) best = depth;\n      }\n    }\n    if (!best) return [];\n    let moves = cands.filter((c) => c.depth === best).map((c) => c.m);\n    if (best === 1 && S.dice.length === 2 && S.dice[0] !== S.dice[1]) {\n      const hi = Math.max(S.dice[0], S.dice[1]);\n      if (moves.some((m) => m.die === hi)) moves = moves.filter((m) => m.die === hi);\n    }\n    return moves;\n  }\n\n  function pips(S, p) { let n = 0; for (let i = 0; i < 24; i++) n += cnt(S, p, i) * (24 - i); return n; }\n\n  function endTurn(N) {\n    N.turnsDone = N.turnsDone.slice(); N.turnsDone[N.turn]++;\n    N.turn = 1 - N.turn; N.phase = 'roll'; N.dice = []; N.headUsed = 0;\n  }\n\n  function finishIfWon(N, p) {\n    if (N.off[p] !== 15) return false;\n    const q = 1 - p;\n    N.phase = 'over'; N.winner = p; N.points = N.off[q] === 0 ? 2 : 1; N.mars = N.off[q] === 0;\n    N.score = N.score.slice(); N.score[p] += N.points; N.dice = [];\n    return true;\n  }\n\n  function newGameState(prev, rolloff) {\n    const last = rolloff[rolloff.length - 1];\n    return {\n      v: prev ? prev.v : 0,\n      game: prev ? (prev.game || 0) + 1 : 1,\n      score: prev ? prev.score.slice() : [0, 0],\n      pts: initialPts(), off: [0, 0],\n      turn: last[0] > last[1] ? 0 : 1,\n      phase: 'roll', dice: [], rolled: [], headUsed: 0, turnsDone: [0, 0],\n      rolloff, lastRoll: null, lastMoves: [], winner: null, points: 0, mars: false, resigned: null,\n    };\n  }\n\n  function validate(S, a) {\n    if (!a || typeof a !== 'object') return false;\n    if (a.type === 'newgame') return (!S || S.phase === 'over') && Array.isArray(a.rolloff) && a.rolloff.length > 0;\n    if (!S) return false;\n    if (a.type === 'roll') return S.phase === 'roll' && a.p === S.turn && Array.isArray(a.dice) && a.dice.length === 2 && a.dice.every((x) => Number.isInteger(x) && x >= 1 && x <= 6);\n    if (a.type === 'move') return S.phase === 'move' && a.p === S.turn && legalMoves(S).some((m) => m.from === a.from && m.to === a.to && m.die === a.die);\n    if (a.type === 'resign') return S.phase !== 'over' && (a.p === 0 || a.p === 1);\n    return false;\n  }\n\n  // Применить действие. Возвращает {state, info}. Предполагается, что validate(S,a) === true.\n  function act(S, a) {\n    const info = {};\n    let N;\n    if (a.type === 'newgame') {\n      N = newGameState(S, a.rolloff);\n    } else if (a.type === 'roll') {\n      N = Object.assign({}, S);\n      N.rolled = a.dice.slice();\n      N.dice = a.dice[0] === a.dice[1] ? [a.dice[0], a.dice[0], a.dice[0], a.dice[0]] : a.dice.slice();\n      N.phase = 'move'; N.headUsed = 0; N.lastRoll = { p: S.turn, dice: a.dice.slice() }; N.lastMoves = [];\n      if (!legalMoves(N).length) { info.passed = true; endTurn(N); }\n    } else if (a.type === 'move') {\n      const p = S.turn;\n      N = applyRaw(S, a);\n      N.lastMoves = (S.lastMoves || []).concat([{ p, from: a.from, to: a.to }]);\n      if (finishIfWon(N, p)) info.over = true;\n      else if (!N.dice.length) endTurn(N);\n      else if (!legalMoves(N).length) { info.restBlocked = N.dice.slice(); endTurn(N); }\n    } else if (a.type === 'resign') {\n      N = Object.assign({}, S);\n      const w = 1 - a.p;\n      N.phase = 'over'; N.winner = w; N.points = 1; N.mars = false; N.resigned = a.p; N.dice = [];\n      N.score = S.score.slice(); N.score[w] += 1; info.over = true;\n    }\n    N.v = (S ? S.v : 0) + 1;\n    return { state: N, info };\n  }\n\n  // Куда можно дойти выбранной шашкой одним или несколькими кубиками подряд\n  function reachable(S, fromIdx) {\n    const out = new Map();\n    const rec = (st, cur, path) => {\n      for (const m of legalMoves(st)) {\n        if (m.from !== cur) continue;\n        const np = path.concat([m]);\n        const ex = out.get(m.to);\n        if (!ex || np.length < ex.length || (np.length === ex.length && np[0].die < ex[0].die)) out.set(m.to, np);\n        if (m.to < 24 && st.dice.length > 1) rec(applyRaw(st, m), m.to, np);\n      }\n    };\n    rec(S, fromIdx, []);\n    return out;\n  }\n\n  function rollOff(rand) {\n    const seq = [];\n    for (let k = 0; k < 20; k++) { const r = [rand(), rand()]; seq.push(r); if (r[0] !== r[1]) break; }\n    if (seq[seq.length - 1][0] === seq[seq.length - 1][1]) seq.push([6, 1]);\n    return seq;\n  }\n\n  return { HOME, absOf, cnt, legalMoves, reachable, applyRaw, act, validate, pips, allHome, rollOff, initialPts, singleMoves, badBlock };\n})();\nif (typeof module !== 'undefined') module.exports = Engine;\n\n/* ===== Бот для длинных нард =====\n   Уровни: 1 Новичок — случайный ход; 2 Любитель — гонка с ошибками;\n   3 Мастер — полная оценка позиции; 4 Гроссмейстер — просчёт ответа соперника. */\nconst Bot = (() => {\n  const E = (typeof Engine !== 'undefined') ? Engine : require('./engine.js');\n  const LEVELS = [\n    { id: 1, name: 'Новичок', note: 'Ходит наугад. Для разминки.' },\n    { id: 2, name: 'Любитель', note: 'Понимает игру, но часто ошибается.' },\n    { id: 3, name: 'Мастер', note: 'Строит блоки, не даёт уйти с головы.' },\n    { id: 4, name: 'Гроссмейстер', note: 'Просчитывает ваш ответ на каждый ход.' },\n  ];\n  const CFG = { K: 6 };\n  const uniq = (a) => [...new Set(a)];\n  const keyOf = (st) => st.pts.join(',') + '|' + st.off[0] + ',' + st.off[1];\n\n  // Все различные итоговые позиции после полного хода (с учётом обязательных правил)\n  function turns(S) {\n    const p = S.turn, out = new Map(), seen = new Set();\n    let best = 0;\n    const rec = (st, seq) => {\n      let any = false;\n      if (st.dice.length && st.off[p] < 15) {\n        for (const d of uniq(st.dice)) for (const m of E.singleMoves(st, d)) {\n          any = true;\n          const n = E.applyRaw(st, m);\n          const k = keyOf(n) + '|' + n.dice.join('') + '|' + n.headUsed;\n          if (seen.has(k)) continue;\n          seen.add(k);\n          rec(n, seq.concat([m]));\n        }\n      }\n      if (!any) {\n        const L = seq.length;\n        if (L < best) return;\n        if (L > best) { best = L; out.clear(); }\n        const k = keyOf(st);\n        if (!out.has(k)) out.set(k, { seq, st });\n      }\n    };\n    rec(S, []);\n    if (!best) return [];\n    if (best === 1) { // один ход: берём разрешённые ходы прямо из правил (там же правило большего кубика)\n      const m1 = new Map();\n      for (const m of E.legalMoves(Object.assign({}, S, { phase: 'move' }))) { const st = E.applyRaw(S, m), k = keyOf(st); if (!m1.has(k)) m1.set(k, { seq: [m], st }); }\n      return [...m1.values()];\n    }\n    return [...out.values()];\n  }\n\n  // ---- оценка позиции: side(p) - side(q), чем больше, тем лучше для p ----\n  const W = { head: 2.2, stack: 2.32, homeStack: 0.5, spread: 1.5, block: 1.1, blockPow: 2.54, blockHome: 0.6 };\n  function side(pts, off, p, w) {\n    const q = 1 - p, sg = p === 0 ? 1 : -1;\n    const own = new Array(24);\n    let pip = 0;\n    for (let i = 0; i < 24; i++) { const v = pts[E.absOf(p, i)] * sg; own[i] = v > 0 ? v : 0; pip += own[i] * (24 - i); }\n    let s = -pip;\n    s -= w.head * Math.max(0, own[0] - 1);\n    let spread = 0;\n    for (let i = 1; i < 24; i++) {\n      if (own[i] > 3) s -= w.stack * (own[i] - 3) * (i < 18 ? 1 : w.homeStack);\n      if (own[i] && i < 18) spread++;\n    }\n    s += w.spread * spread;\n    // блоки в координатах пути соперника: шашки соперника позади блока должны через него пройти\n    const qs = q === 0 ? 1 : -1, opp = new Array(24);\n    for (let j = 0; j < 24; j++) { const v = pts[E.absOf(q, j)] * qs; opp[j] = v > 0 ? v : 0; }\n    let behind = 0, j = 0;\n    const behindAt = new Array(25); behindAt[0] = 0;\n    for (let k = 0; k < 24; k++) behindAt[k + 1] = behindAt[k] + opp[k];\n    while (j < 24) {\n      const a = pts[E.absOf(q, j)] * sg;\n      if (a > 0) {\n        let e = j;\n        while (e + 1 < 24 && pts[E.absOf(q, e + 1)] * sg > 0) e++;\n        const L = e - j + 1;\n        behind = behindAt[j];\n        if (L >= 2 && behind) s += w.block * Math.pow(L, w.blockPow) * (behind / 15) * (j < 18 ? 1 : w.blockHome);\n        j = e + 1;\n      } else j++;\n    }\n    return s;\n  }\n  function evaluate(st, p, w = W) {\n    if (st.off[p] === 15) return 1e6;\n    return side(st.pts, st.off, p, w) - side(st.pts, st.off, 1 - p, w);\n  }\n\n  const ROLLS = [];\n  for (let a = 1; a <= 6; a++) for (let b = a; b <= 6; b++) ROLLS.push({ dice: [a, b], w: a === b ? 1 / 36 : 2 / 36 });\n\n  function oppState(S, st) {\n    const p = S.turn, q = 1 - p, td = S.turnsDone.slice(); td[p]++;\n    return { pts: st.pts, off: st.off, turn: q, phase: 'move', dice: [], rolled: [], headUsed: 0, turnsDone: td };\n  }\n  function replyValue(S, st, w) { // ожидаемая оценка для p после лучшего ответа соперника\n    const p = S.turn; if (st.off[p] === 15) return 1e6;\n    const base = oppState(S, st); let sum = 0;\n    for (const r of ROLLS) {\n      const O = Object.assign({}, base, { rolled: r.dice, dice: r.dice[0] === r.dice[1] ? [r.dice[0], r.dice[0], r.dice[0], r.dice[0]] : r.dice.slice() });\n      const ts = turns(O);\n      let worst = ts.length ? Infinity : evaluate(st, p, w);\n      for (const t of ts) { const v = evaluate(t.st, p, w); if (v < worst) worst = v; }\n      sum += r.w * worst;\n    }\n    return sum;\n  }\n\n  function choose(S, level, rand = Math.random, w = W) {\n    const ts = turns(S);\n    if (!ts.length) return [];\n    if (ts.length === 1) return ts[0].seq;\n    const p = S.turn;\n    if (level <= 1) return ts[Math.floor(rand() * ts.length)].seq;\n    if (level === 2) { // понимает позицию, но часто ошибается\n      if (rand() < 0.2) return ts[Math.floor(rand() * ts.length)].seq;\n      let best = null, bv = -Infinity;\n      for (const t of ts) { const v = evaluate(t.st, p, w) + (rand() + rand() + rand() - 1.5) * 14; if (v > bv) { bv = v; best = t; } }\n      return best.seq;\n    }\n    const scored = ts.map((t) => ({ t, v: evaluate(t.st, p, w) })).sort((a, b) => b.v - a.v);\n    if (level === 3) return scored[0].t.seq;\n    const K = Math.min(scored.length, CFG.K);\n    let best = scored[0], bv = -Infinity;\n    for (let i = 0; i < K; i++) { const v = replyValue(S, scored[i].t.st, w); if (v > bv) { bv = v; best = scored[i]; } }\n    return best.t.seq;\n  }\n\n  return { LEVELS, W, CFG, turns, evaluate, choose };\n})();\nif (typeof module !== 'undefined') module.exports = Bot;\n\nself.onmessage = (e) => { const d = e.data || {}; let seq = null; try { seq = Bot.choose(d.S, d.level); } catch (err) { seq = null; } self.postMessage({ id: d.id, seq }); };\n";</script>
 <script>
 (() => {
 'use strict';
@@ -828,6 +984,7 @@ const Emotes = {
     if (App.mode === 'net') App.net && App.net.send({ t: 'emote', id, src: id === 'img' ? src : undefined });
     const fromTop = App.mode === 'local' && App.S && App.S.turn !== App.me; // на одном экране кидает тот, чей ход
     this.fly(id, src, fromTop ? 'top' : 'bottom');
+    if (App.mode === 'bot' && Math.random() < 0.7) App.botEmote('reply', 1300);
   },
   receive(d) {
     const now = Date.now(); this.incoming = this.incoming.filter((t) => now - t < 3000);
@@ -1010,11 +1167,42 @@ const Media = {
   reset() { this.stopCam(); if (this.inc) { try { this.inc.close(); } catch (e) {} } this.inc = null; this.setRemote(null); },
 };
 
+/* ================= Бот (фоновый поток) ================= */
+const PIPS = { 1: [[0, 0]], 2: [[-1, -1], [1, 1]], 3: [[-1, -1], [0, 0], [1, 1]], 4: [[-1, -1], [1, -1], [-1, 1], [1, 1]], 5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]], 6: [[-1, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [1, 1]] };
+function dieSvg(n) {
+  return '<svg viewBox="0 0 36 36" aria-hidden="true"><rect x="2" y="2" width="32" height="32" rx="7" fill="#F6EFE4" stroke="#B7A487" stroke-width="1"/>' +
+    PIPS[n].map(([x, y]) => `<circle cx="${18 + x * 8.5}" cy="${18 + y * 8.5}" r="3.1" fill="#1E2029"/>`).join('') + '</svg>';
+}
+const BotRunner = {
+  w: null, id: 0, pending: new Map(), failed: false,
+  init() {
+    if (this.w || this.failed || typeof WORKER_SRC === 'undefined') return;
+    try {
+      this.w = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+      this.w.onmessage = (e) => { const f = this.pending.get(e.data.id); if (f) { this.pending.delete(e.data.id); f(e.data.seq); } };
+      this.w.onerror = () => { this.failed = true; this.w = null; for (const f of this.pending.values()) f(null); this.pending.clear(); };
+    } catch (e) { this.failed = true; this.w = null; }
+  },
+  choose(S, level) {
+    this.init();
+    const sync = () => new Promise((r) => setTimeout(() => { try { r(Bot.choose(S, level)); } catch (e) { r([]); } }, 20));
+    if (!this.w) return sync();
+    return new Promise((resolve) => {
+      const id = ++this.id; let done = false, t = null;
+      const fin = (seq) => { if (done) return; done = true; clearTimeout(t); if (Array.isArray(seq)) resolve(seq); else sync().then(resolve); };
+      t = setTimeout(() => { this.pending.delete(id); fin(null); }, 6000);
+      this.pending.set(id, fin);
+      try { this.w.postMessage({ id, S: JSON.parse(JSON.stringify(S)), level }); } catch (e) { this.pending.delete(id); fin(null); }
+    });
+  },
+};
+
 /* ================= Приложение ================= */
 const App = {
   mode: null, role: null, code: null, me: 0, S: null, net: null,
   myName: store.get('nardy:name', ''), oppName: 'Соперник', conn: 'idle',
   sel: null, reach: null, busy: false, queue: Promise.resolve(), rolling: false, lastTurnSeen: null, wake: null,
+  botLevel: 3, botBusy: false, botThinking: false, botToken: 0,
 
   /* ----- запуск ----- */
   init() {
@@ -1043,6 +1231,7 @@ const App = {
     $('btnCreate').onclick = () => this.createRoom();
     $('btnResume').onclick = () => { const l = store.get('nardy:last'); if (l) this.enterNet(l.role, l.code); };
     $('btnLocal').onclick = () => this.enterLocal();
+    $('btnBot').onclick = () => { Snd.ensure(); this.openBotSheet(false); };
     $('btnJoin').onclick = () => this.joinRoom(true);
     $('btnJoinNoCam').onclick = () => this.joinRoom(false);
     $('board').addEventListener('click', (e) => this.onBoardClick(e));
@@ -1100,7 +1289,73 @@ const App = {
     Board.setMe(0); this.showGame(); Board.sync(this.S); this.render();
     if (!this.S) this.newGame();
   },
+  openBotSheet(fromMenu) {
+    const L = $('botList'); L.textContent = '';
+    const saved = store.get('nardy:bot');
+    if (!fromMenu && saved && this.sane(saved.state) && saved.state.phase !== 'over' && Bot.LEVELS[saved.level - 1]) {
+      const lv = Bot.LEVELS[saved.level - 1], b = document.createElement('button'); b.className = 'lvl resume';
+      b.innerHTML = dieSvg(lv.id) + `<span><b>Продолжить партию</b><small>${esc(lv.name)} · счёт ${saved.state.score[0]}:${saved.state.score[1]}</small></span>`;
+      b.onclick = () => { this.closeSheets(); this.enterBot(lv.id, true); }; L.appendChild(b);
+    }
+    for (const lv of Bot.LEVELS) {
+      const b = document.createElement('button'); b.className = 'lvl';
+      b.innerHTML = dieSvg(lv.id) + `<span><b>${esc(lv.name)}</b><small>${esc(lv.note)}</small></span>`;
+      b.onclick = () => { this.closeSheets(); this.enterBot(lv.id, false); }; L.appendChild(b);
+    }
+    $('sheetBot').hidden = false;
+  },
+  enterBot(level, resume) {
+    if (this.net) { this.net.destroy(); this.net = null; }
+    this.botToken++; this.botBusy = false; this.botThinking = false;
+    this.mode = 'bot'; this.role = null; this.code = null; this.me = 0; this.botLevel = level;
+    this.oppName = Bot.LEVELS[level - 1].name;
+    const saved = resume ? store.get('nardy:bot') : null;
+    this.S = saved && this.sane(saved.state) ? saved.state : null; this.sel = null; this.reach = null;
+    Board.setMe(0); Board.first = true; this.showGame(); Board.sync(this.S || { pts: Engine.initialPts(), off: [0, 0] }); this.render();
+    if (!this.S) this.commit({ type: 'newgame', rolloff: Engine.rollOff(rnd6) });
+    else { this.save(); this.botStep(); }
+  },
+  async botStep() {
+    if (this.mode !== 'bot' || this.botBusy) return;
+    const S0 = this.S, bp = 1 - this.me;
+    if (!S0 || S0.phase === 'over' || S0.turn !== bp) return;
+    const tok = this.botToken, alive = () => this.mode === 'bot' && tok === this.botToken;
+    this.botBusy = true;
+    try {
+      if (this.S.phase === 'roll') {
+        await sleep(600);
+        if (!alive() || this.S.phase !== 'roll' || this.S.turn !== bp) return;
+        await this.commit({ type: 'roll', p: bp, dice: [rnd6(), rnd6()] });
+      }
+      if (!alive() || this.S.phase !== 'move' || this.S.turn !== bp) return;
+      this.botThinking = true; this.renderSeats();
+      const t0 = Date.now(); let seq = [];
+      try { seq = await BotRunner.choose(this.S, this.botLevel); } catch (e) { seq = []; }
+      await sleep(Math.max(0, 450 - (Date.now() - t0)));
+      if (!alive()) return;
+      this.botThinking = false; this.renderSeats();
+      for (const m of seq) {
+        if (!alive() || this.S.phase !== 'move' || this.S.turn !== bp) break;
+        await this.commit({ type: 'move', p: bp, from: m.from, to: m.to, die: m.die }); await sleep(320);
+      }
+      let guard = 0; // страховка: если вариант бота не подошёл, доигрывает первым разрешённым ходом
+      while (alive() && this.S.phase === 'move' && this.S.turn === bp && guard++ < 6) {
+        const m = Engine.legalMoves(this.S)[0]; if (!m) break;
+        await this.commit({ type: 'move', p: bp, from: m.from, to: m.to, die: m.die }); await sleep(320);
+      }
+    } finally {
+      if (tok === this.botToken) { this.botBusy = false; this.botThinking = false; if (this.mode === 'bot') this.renderSeats(); }
+    }
+    if (alive() && this.S && this.S.phase !== 'over' && this.S.turn === bp) setTimeout(() => this.botStep(), 60);
+  },
+  botEmote(kind, delay = 600) {
+    if (this.mode !== 'bot') return;
+    const sets = { reply: ['😂', '🙏', '🤯', '😡', '👏', '💤', '🍅'], win: ['😂', '🔥', 'goal'], lose: ['👏', '😭', '🌹'], double: ['🔥', '🤯'] };
+    const list = sets[kind]; const id = list[Math.floor(Math.random() * list.length)]; const tok = this.botToken;
+    setTimeout(() => { if (this.mode === 'bot' && tok === this.botToken) Emotes.fly(id, null, 'top'); }, delay);
+  },
   leave() {
+    this.botToken++; this.botBusy = false; this.botThinking = false;
     if (this.net) { this.net.destroy(); this.net = null; } Media.reset();
     this.mode = null; this.S = null; this.sel = null; this.reach = null; Board.stacks.clear(); Board.first = true; Board.sync(null);
     history.replaceState(null, '', location.pathname); this.closeSheets();
@@ -1111,6 +1366,7 @@ const App = {
   save() {
     if (this.mode === 'net') store.set('nardy:room:' + this.code, { state: this.S, opp: this.oppName });
     else if (this.mode === 'local') store.set('nardy:local', this.S);
+    else if (this.mode === 'bot') store.set('nardy:bot', { state: this.S, level: this.botLevel });
   },
   sane(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.pts) || s.pts.length !== 24 || !Array.isArray(s.off) || s.off.length !== 2) return false;
@@ -1157,6 +1413,7 @@ const App = {
       const r = Engine.act(this.S, a); const prev = this.S; this.S = r.state; this.save();
       if (this.mode === 'net') this.net.send({ t: 'act', a, s: this.S });
       await this.present(prev, a, r.info);
+      if (this.mode === 'bot') setTimeout(() => this.botStep(), 30);
     });
   },
   applyRemote(d) {
@@ -1177,7 +1434,12 @@ const App = {
   },
 
   /* ----- действия игрока ----- */
-  canAct() { return !!this.S && !this.busy && (this.mode === 'local' || (this.S.turn === this.me && this.net && this.net.open)); },
+  canAct() {
+    if (!this.S || this.busy) return false;
+    if (this.mode === 'local') return true;
+    if (this.mode === 'bot') return this.S.turn === this.me;
+    return this.S.turn === this.me && !!(this.net && this.net.open);
+  },
   roll() {
     if (!this.S || this.S.phase !== 'roll' || !this.canAct()) return;
     this.commit({ type: 'roll', p: this.S.turn, dice: [rnd6(), rnd6()] });
@@ -1231,6 +1493,7 @@ const App = {
       const nodes = Board.drawDice(dice.map((v) => ({ v })), side, { tumble: true });
       for (let k = 0; k < 6; k++) { await sleep(70); nodes.forEach((n, i) => n.replaceChildren(...Board.dieNode(k === 5 ? dice[i] : 1 + Math.floor(Math.random() * 6), n._cx, G.MID, n._s).childNodes)); }
       await sleep(140); this.rolling = false; this.render();
+      if (this.mode === 'bot' && a.p !== this.me && a.dice[0] === a.dice[1] && a.dice[0] >= 5 && Math.random() < 0.6) this.botEmote('double', 200);
       if (info.passed) { this.toast(this.isMine(a.p) ? 'Нет хода — ход переходит сопернику' : (this.mode === 'local' ? 'Нет хода — ход переходит' : this.oppName + ': нет хода'), 1900); await sleep(700); }
     } else if (a.type === 'move') {
       Board.sync(S); Snd.play('click'); this.render(); await sleep(320);
@@ -1261,6 +1524,7 @@ const App = {
     $('overMe').textContent = S.score[me]; $('overOpp').textContent = S.score[1 - me];
     $('overMeName').textContent = this.nameOf(me); $('overOppName').textContent = this.nameOf(1 - me);
     $('sheetOver').hidden = false; if (iWon) Snd.play('win');
+    if (this.mode === 'bot') this.botEmote(iWon ? 'lose' : 'win', 900);
   },
   closeSheets() { for (const s of document.querySelectorAll('.scrim')) s.hidden = true; },
 
@@ -1269,11 +1533,12 @@ const App = {
     const L = $('menuList'); L.textContent = '';
     const item = (label, fn, cls = '') => { const b = document.createElement('button'); b.className = 'menu-item ' + cls; b.innerHTML = label; b.onclick = fn; L.appendChild(b); return b; };
     if (this.mode === 'net') item('Пригласить соперника<span>→</span>', () => { this.closeSheets(); $('sheetInvite').hidden = false; });
+    if (this.mode === 'bot') item(`Сложность <span>${esc(Bot.LEVELS[this.botLevel - 1].name)} →</span>`, () => { this.closeSheets(); this.openBotSheet(true); });
     item('Правила<span>→</span>', () => { this.closeSheets(); $('sheetRules').hidden = false; });
     item(`Звук <span>${Snd.on ? 'вкл' : 'выкл'}</span>`, (e) => { Snd.on = !Snd.on; store.set('nardy:sound', Snd.on); e.currentTarget.querySelector('span').textContent = Snd.on ? 'вкл' : 'выкл'; });
     const S = this.S;
     if (S && S.phase === 'over') item('Ещё партию<span>→</span>', () => { this.closeSheets(); this.newGame(); });
-    else if (S && (this.mode === 'local' || (this.net && this.net.open))) {
+    else if (S && (this.mode === 'local' || this.mode === 'bot' || (this.net && this.net.open))) {
       const label = this.mode === 'local' ? 'Сдаться за ' + (S.turn === 0 ? 'белых' : 'чёрных') : 'Сдаться';
       const b = item(label, () => {
         const c = document.createElement('div'); c.className = 'confirm';
@@ -1305,12 +1570,13 @@ const App = {
     return p === this.me ? (this.myName || 'Вы') : this.oppName;
   },
   toast(msg, ms = 1500) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(this.toastT); this.toastT = setTimeout(() => t.classList.remove('show'), ms); },
-  render() { this.renderSeats(); this.renderDice(); this.renderMarks(); this.renderControls(); },
+  render() { $('game').classList.toggle('mode-bot', this.mode === 'bot'); this.renderSeats(); this.renderDice(); this.renderMarks(); this.renderControls(); },
   renderSeats() {
     const S = this.S, local = this.mode === 'local', me = local ? 0 : this.me, opp = 1 - me;
     $('chipMe').className = 'chip ' + (me === 0 ? 'chip-w' : 'chip-b'); $('chipOpp').className = 'chip ' + (opp === 0 ? 'chip-w' : 'chip-b');
     $('nameMe').textContent = this.nameOf(me); $('nameOpp').textContent = this.nameOf(opp);
-    $('avMe').textContent = (this.nameOf(me) || '?').slice(0, 1).toUpperCase(); $('avOpp').textContent = (this.nameOf(opp) || '?').slice(0, 1).toUpperCase();
+    $('avMe').textContent = (this.nameOf(me) || '?').slice(0, 1).toUpperCase();
+    if (this.mode === 'bot') $('avOpp').innerHTML = dieSvg(this.botLevel); else $('avOpp').textContent = (this.nameOf(opp) || '?').slice(0, 1).toUpperCase();
     const meta = (p) => S ? `осталось ${Engine.pips(S, p)}` + (S.off[p] ? ` · выведено ${S.off[p]}` : '') : 'осталось 360';
     $('metaMe').textContent = meta(me); $('metaOpp').textContent = meta(opp);
     $('scoreMe').textContent = S ? S.score[me] : 0; $('scoreOpp').textContent = S ? S.score[opp] : 0;
@@ -1319,6 +1585,7 @@ const App = {
     // статус соединения
     const st = $('statusOpp'); let txt = '', cls = '';
     if (local) { txt = S && S.phase !== 'over' && S.turn === opp ? 'ходят чёрные' : 'на одном экране'; cls = ''; }
+    else if (this.mode === 'bot') { txt = this.botThinking ? 'бот думает…' : 'бот · уровень ' + this.botLevel + ' из 4'; cls = this.botThinking ? 'warn' : 'online'; }
     else {
       const M = { online: ['в сети', 'online'], connecting: ['подключение…', 'warn'], waiting: ['ждём соперника', 'warn'], 'waiting-back': ['соперник отключился', 'bad'], reconnecting: ['переподключаемся…', 'warn'], 'opp-offline': ['создатель игры не в сети', 'bad'], 'net-down': ['нет связи с сервером', 'bad'], 'id-taken': ['комната открыта на другом устройстве', 'bad'], incompatible: ['браузер не поддерживает видеосвязь', 'bad'], full: ['в комнате уже двое игроков', 'bad'], idle: ['—', ''] };
       [txt, cls] = M[this.conn] || ['—', ''];
@@ -1337,7 +1604,7 @@ const App = {
       tl.classList.add('mine');
       const who = local ? (S.turn === 0 ? 'Белые' : 'Чёрные') + ': ' : 'Ваш ход: ';
       tl.textContent = S.phase === 'roll' ? who + 'бросайте кубики' : who + 'сыграйте ' + S.dice.join(' и ') + (local ? '' : '. Ход не отменить');
-    } else tl.textContent = 'Ходит ' + this.oppName;
+    } else tl.textContent = this.mode === 'bot' ? (this.botThinking ? 'Бот думает…' : 'Ходит бот') : 'Ходит ' + this.oppName;
   },
   renderDice() {
     const S = this.S;
@@ -1373,7 +1640,7 @@ const App = {
   },
 };
 
-window.NardyApp = App; // для отладки
+window.NardyApp = App; window.NardyBot = BotRunner; // для отладки
 App.init();
 })();
 </script>

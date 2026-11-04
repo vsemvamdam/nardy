@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build": "node build.js && cp dist/index.html ../index.html",
-    "test": "node test/engine.test.js"
+    "test": "node test/engine.test.js && N=40 N4=10 node test/bot.test.js"
   },
   "dependencies": { "peerjs": "1.5.5" },
   "devDependencies": { "peer": "1.0.2" }
