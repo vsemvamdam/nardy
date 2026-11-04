@@ -12,3 +12,5 @@
 ## Исходники
 
 Папка `dev/`: `src/engine.js` — правила, `src/app.html` — интерфейс. `src/bot.js` — бот. Сборка: `cd dev && npm i && npm run build && npm test`. Турнир уровней: `N=100 node test/bot.test.js`.
+
+Сайт: https://vsemvamdam.github.io/nardy/
