@@ -1,0 +1,10 @@
+{
+  "name": "nardy",
+  "private": true,
+  "scripts": {
+    "build": "node build.js && cp dist/index.html ../index.html",
+    "test": "node test/engine.test.js"
+  },
+  "dependencies": { "peerjs": "1.5.5" },
+  "devDependencies": { "peer": "1.0.2" }
+}

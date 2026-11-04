@@ -1,0 +1,2 @@
+const { PeerServer } = require('peer');
+PeerServer({ port: 9000, host: '127.0.0.1', path: '/' }, (s) => console.log('peer server up', s.address()));

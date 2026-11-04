@@ -1,0 +1,10 @@
+const fs = require('fs');
+const path = require('path');
+const tpl = fs.readFileSync(path.join(__dirname, 'src/app.html'), 'utf8');
+const strip = (code) => code.replace(/\/\/# sourceMappingURL=.*$/gm, '').replace(/<\/script/gi, '<\\/script');
+const peer = strip(fs.readFileSync(path.join(__dirname, 'node_modules/peerjs/dist/peerjs.min.js'), 'utf8'));
+const engine = strip(fs.readFileSync(path.join(__dirname, 'src/engine.js'), 'utf8'));
+const out = tpl.replace('/*__PEERJS__*/', () => peer).replace('/*__ENGINE__*/', () => engine);
+fs.mkdirSync(path.join(__dirname, 'dist'), { recursive: true });
+fs.writeFileSync(path.join(__dirname, 'dist/index.html'), out);
+console.log('dist/index.html', (out.length / 1024).toFixed(1) + ' KB');
